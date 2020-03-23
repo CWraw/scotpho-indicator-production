@@ -497,6 +497,59 @@ create_agegroups <- function(dataset) {
       between(age, 50, 54) ~ 11, between(age, 55, 59) ~ 12, between(age, 60, 64) ~ 13,
       between(age, 65, 69) ~ 14, between(age, 70, 74) ~ 15,  between(age, 75, 79) ~ 16,
       between(age, 80, 84) ~ 17, between(age, 85, 89) ~ 18, between(age, 90, 200) ~ 19)))
-  }
+}
 
+###############################################.
+## Function to extract admission data ----
+###############################################.
+extract_admissions <- function(start, end, diagnosis, year_type, age = 0) {
+  
+  if(!(exists("channel") )) {
+    channel <- suppressWarnings(dbConnect(odbc(),  dsn="SMRA",
+                                          uid=.rs.askForPassword("SMRA Username:"), 
+                                          pwd=.rs.askForPassword("SMRA Password:")))
+    channel <<- channel
+  } else {
+    channel <- channel
+  }
+  
+  # Sorting variables
+  sort_var <- "link_no, admission_date, discharge_date, admission, discharge, uri"
+  
+  year_var <- case_when(year_type == "calendar" ~ 
+                          "MIN(extract (year from admission_date)) OVER (PARTITION BY link_no, cis_marker) year, ",
+                        year_type == "financial" ~ 
+                          "MAX(CASE WHEN extract(month from admission_date) > 3 
+                          THEN extract(year from admission_date) 
+                          ELSE extract(year from admission_date) -1 END) as year, ")
+  
+  data_smr <- tbl_df(dbGetQuery(channel, statement= paste0(
+    "WITH adm_table AS (
+        SELECT distinct link_no, cis_marker, 
+            FIRST_VALUE(DR_POSTCODE) OVER (PARTITION BY link_no, cis_marker 
+                ORDER BY ", sort_var, ") pc7,
+            FIRST_VALUE(sex) OVER (PARTITION BY link_no, cis_marker 
+                ORDER BY ", sort_var, ") sex_grp,
+            MIN(age_in_years) OVER (PARTITION BY link_no, cis_marker) age, ",
+    year_var,
+    "MIN(admission_date) OVER (PARTITION BY link_no, cis_marker) start_cis
+        FROM ANALYSIS.SMR01_PI  z
+        WHERE exists(
+          SELECT * 
+          FROM ANALYSIS.SMR01_PI  
+          WHERE link_no=z.link_no and cis_marker=z.cis_marker
+              AND regexp_like(main_condition, '", diagnosis, "')
+        )
+    )
+    SELECT link_no, cis_marker, sex_grp, age, year, pc7
+    FROM adm_table 
+    WHERE start_cis between '", start, "' and '", end, "'
+        AND sex_grp in ('1', '2') 
+        AND age >=  ",  age," "))) %>% 
+    setNames(tolower(names(.))) 
+  
+}
+
+# test <- extract_admissions(start = "1 April 2018", end = "31 March 2019", 
+#                    diagnosis = "J4[5-6]", year_type = "financial")
 ##END
